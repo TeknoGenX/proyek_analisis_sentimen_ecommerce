@@ -20,7 +20,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT_DIR))
 
 import config
-from src.scraper import scrape_playstore_reviews, scrape_multi_platforms, load_dataset
+from src.scraper import scrape_playstore_reviews, scrape_multi_platforms, load_dataset, rating_to_sentiment
 from src.preprocessor import IndonesianTextPreprocessor
 from src.features import FeatureExtractor
 from src.model_trainer import SentimentModelTrainer
@@ -56,12 +56,13 @@ def cmd_scrape(args):
     platform = getattr(args, "platform", None)
     filter_tiktok = not getattr(args, "no_filter_tiktok", False)
     workers = getattr(args, "workers", config.SCRAPE_MAX_WORKERS)
+    count = getattr(args, "count", config.DEFAULT_SCRAPE_COUNT)
     
     if platform == "all":
         print(f"\n[*] Memulai scraping batch paralel untuk SELURUH 7 platform e-commerce...")
-        print(f"[*] Target: {args.count} ulasan/platform (Paralel {workers} workers)...")
+        print(f"[*] Target: {count} ulasan/platform (Paralel {workers} workers)...")
         df = scrape_multi_platforms(
-            count_per_platform=args.count,
+            count_per_platform=count,
             max_workers=workers,
             save_path=str(config.COMPARISON_RAW_DATASET_PATH),
             filter_tiktok=filter_tiktok
@@ -71,11 +72,11 @@ def cmd_scrape(args):
     else:
         app_id = getattr(args, "app", None)
         target_display = platform or app_id or config.DEFAULT_PLATFORM
-        print(f"\n[*] Mengambil {args.count} ulasan dari Play Store untuk platform/app: {target_display}...")
+        print(f"\n[*] Mengambil {count} ulasan dari Play Store untuk platform/app: {target_display}...")
         df = scrape_playstore_reviews(
             app_id=app_id,
             platform_key=platform,
-            count=args.count,
+            count=count,
             save_path=str(config.RAW_DATASET_PATH),
             filter_tiktok=filter_tiktok
         )
@@ -89,7 +90,7 @@ def cmd_preprocess(args):
     df = load_dataset(config.RAW_DATASET_PATH)
     
     preprocessor = IndonesianTextPreprocessor()
-    print(f"[*] Memproses {len(df)} teks ulasan (caching aktif)...")
+    print(f"[*] Memproses {len(df)} teks ulasan utama (caching aktif)...")
     
     df["clean_review"] = df["teks_ulasan"].apply(preprocessor.clean)
     
@@ -97,14 +98,29 @@ def cmd_preprocess(args):
     initial_len = len(df)
     df = df[df["clean_review"].str.strip() != ""]
     final_len = len(df)
-    
-    preprocessor.save_cache()
-    
+
     config.PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
     df.to_csv(config.PROCESSED_DATASET_PATH, index=False)
-    print(f"[✓] Pra-pemrosesan selesai! {initial_len - final_len} baris kosong dibersihkan.")
+    print(f"[✓] Pra-pemrosesan dataset utama selesai! {initial_len - final_len} baris kosong dibersihkan.")
     print(f"[✓] Dataset bersih disimpan ke: {config.PROCESSED_DATASET_PATH}")
+
+    # Bersihkan juga dataset komparasi multi-platform jika file mentahnya ada
+    if config.COMPARISON_RAW_DATASET_PATH.exists():
+        print("\n[*] Memproses dataset komparasi multi-platform...")
+        comp_df = pd.read_csv(config.COMPARISON_RAW_DATASET_PATH)
+        if "content" in comp_df.columns and "teks_ulasan" not in comp_df.columns:
+            comp_df = comp_df.rename(columns={"content": "teks_ulasan", "score": "rating"})
+        if "teks_ulasan" in comp_df.columns:
+            comp_df["clean_review"] = comp_df["teks_ulasan"].apply(preprocessor.clean)
+            if "label" not in comp_df.columns and "rating" in comp_df.columns:
+                comp_df["label"] = comp_df["rating"].astype(int).apply(rating_to_sentiment)
+            comp_df = comp_df[comp_df["clean_review"].str.strip() != ""]
+            comp_df.to_csv(config.COMPARISON_PROCESSED_DATASET_PATH, index=False)
+            print(f"[✓] Dataset komparasi bersih disimpan ke: {config.COMPARISON_PROCESSED_DATASET_PATH}")
+
+    preprocessor.save_cache()
     return df
+
 
 
 def cmd_train(args):
@@ -232,6 +248,11 @@ def cmd_evaluate(args):
 
 def cmd_predict(args):
     """Memprediksi sentimen untuk satu input teks ulasan."""
+    if not config.MODEL_PATH.exists() or not config.VECTORIZER_PATH.exists():
+        print("[!] Model atau TF-IDF vectorizer belum dilatih.")
+        print("[*] Silakan jalankan 'python main.py train' terlebih dahulu.")
+        return
+
     predictor = SentimentPredictor()
     res = predictor.predict_one(args.text)
 
@@ -258,6 +279,11 @@ def cmd_predict(args):
 
 def cmd_interactive(args):
     """Mode pengujian sentimen real-time interaktif di terminal."""
+    if not config.MODEL_PATH.exists() or not config.VECTORIZER_PATH.exists():
+        print("[!] Model atau TF-IDF vectorizer belum dilatih.")
+        print("[*] Silakan jalankan 'python main.py train' terlebih dahulu.")
+        return
+
     predictor = SentimentPredictor()
     print("\n" + "=" * 60)
     print(" MODE PENGUJIAN SENTIMEN INTERAKTIF (Ketik 'keluar' untuk stop) ")
@@ -266,6 +292,7 @@ def cmd_interactive(args):
     while True:
         try:
             user_input = input("\nMasukkan teks ulasan: ").strip()
+
             if not user_input:
                 continue
             if user_input.lower() in ["keluar", "exit", "quit", "q"]:

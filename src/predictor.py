@@ -3,8 +3,9 @@ Modul Inferensi Sentimen untuk Prediksi Teks Real-Time / Batch.
 """
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 import numpy as np
+import pandas as pd
 
 import config
 from src.preprocessor import IndonesianTextPreprocessor
@@ -70,15 +71,28 @@ class SentimentPredictor:
             probs = self.model.predict_proba(vec)[0]
             for cls_name, prob_val in zip(self.classes_, probs):
                 probs_dict[cls_name] = round(float(prob_val), 4)
-            confidence = probs_dict.get(prediction, max(probs))
+            confidence = probs_dict.get(prediction, float(max(probs)))
         elif hasattr(self.model, "decision_function"):
-            scores = self.model.decision_function(vec)[0]
-            # Softmax sederhana untuk mengubah skor margin ke probabilitas
-            exp_scores = np.exp(scores - np.max(scores))
-            probs = exp_scores / np.sum(exp_scores)
-            for cls_name, prob_val in zip(self.classes_, probs):
-                probs_dict[cls_name] = round(float(prob_val), 4)
-            confidence = probs_dict.get(prediction, max(probs))
+            raw_scores = self.model.decision_function(vec)
+            # Kasus biner pada scikit-learn (LinearSVC): decision_function memiliki shape (n_samples,)
+            if raw_scores.ndim == 1 or (raw_scores.ndim == 2 and raw_scores.shape[1] == 1):
+                score = float(raw_scores[0])
+                # Fungsi Sigmoid untuk probabilitas 2 kelas
+                p1 = 1.0 / (1.0 + np.exp(-score))
+                p0 = 1.0 - p1
+                probs = [p0, p1]
+                classes = list(self.classes_[:2]) if len(self.classes_) >= 2 else ["negatif", "positif"]
+                for cls_name, prob_val in zip(classes, probs):
+                    probs_dict[cls_name] = round(float(prob_val), 4)
+                confidence = probs_dict.get(prediction, float(max(probs)))
+            else:
+                # Kasus multiclass: shape (n_samples, n_classes)
+                scores = raw_scores[0]
+                exp_scores = np.exp(scores - np.max(scores))
+                probs = exp_scores / np.sum(exp_scores)
+                for cls_name, prob_val in zip(self.classes_, probs):
+                    probs_dict[cls_name] = round(float(prob_val), 4)
+                confidence = probs_dict.get(prediction, float(max(probs)))
 
         return {
             "teks_asli": text,
@@ -88,6 +102,9 @@ class SentimentPredictor:
             "probabilitas": probs_dict
         }
 
-    def predict_batch(self, texts: List[str]) -> List[Dict[str, Union[str, float, Dict[str, float]]]]:
+    def predict_batch(self, texts: Union[List[str], pd.Series, str]) -> List[Dict[str, Union[str, float, Dict[str, float]]]]:
         """Melakukan inferensi pada sekumpulan teks sekaligus."""
+        if isinstance(texts, str):
+            texts = [texts]
         return [self.predict_one(t) for t in texts]
+

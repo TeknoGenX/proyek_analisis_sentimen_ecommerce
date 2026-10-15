@@ -66,6 +66,12 @@ class TestScraperModule(unittest.TestCase):
         self.assertIn("label", df.columns)
         self.assertIn("platform", df.columns)
 
+    def test_load_dataset_non_existent_raises_error(self):
+        """Memverifikasi bahwa file yang tidak ada secara eksplisit melempar FileNotFoundError."""
+        with self.assertRaises(FileNotFoundError):
+            load_dataset("path_palsu_yang_pasti_tidak_ada.csv")
+
 
 if __name__ == "__main__":
     unittest.main()
+

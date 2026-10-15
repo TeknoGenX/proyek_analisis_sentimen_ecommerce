@@ -130,8 +130,12 @@ class SentimentVisualizer:
             save_path=config.WORDCLOUD_POSITIF_PATH
         )
 
-    def plot_distribution(self, df: pd.DataFrame) -> Path:
+    def plot_distribution(self, df: pd.DataFrame) -> Optional[Path]:
         """Membuat diagram batang distribusi sentimen pada dataset tunggal."""
+        if df.empty or "label" not in df.columns or len(df) == 0:
+            logger.warning("DataFrame kosong atau tidak memiliki kolom 'label', diagram distribusi dilewati.")
+            return None
+
         plt.figure(figsize=(8, 5))
         counts = df["label"].value_counts()
         palette = {"positif": "#2ecc71", "netral": "#f39c12", "negatif": "#e74c3c"}
@@ -142,7 +146,7 @@ class SentimentVisualizer:
         total = len(df)
         for p in ax.patches:
             val = int(p.get_height())
-            pct = val / total * 100
+            pct = val / total * 100 if total > 0 else 0.0
             ax.annotate(
                 f"{val} ({pct:.1f}%)",
                 (p.get_x() + p.get_width() / 2., p.get_height()),
@@ -164,7 +168,7 @@ class SentimentVisualizer:
     # MODUL METRIK & VISUALISASI KOMPARATIF 7 PLATFORM
     # =========================================================================
 
-    def calculate_platform_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
+    def calculate_platform_metrics(self, df: pd.DataFrame, save_json: bool = True) -> pd.DataFrame:
         """
         Menghitung metrik sentimen komparatif per platform:
         - Total Ulasan
@@ -172,11 +176,20 @@ class SentimentVisualizer:
         - Net Sentiment Score (NSS = % Positif - % Negatif)
         - Rata-rata Rating Bintang
         """
+        cols = [
+            "platform", "nama_platform", "total_ulasan", "positif",
+            "netral", "negatif", "pct_positif", "pct_netral", "pct_negatif",
+            "nss", "rata_rata_rating"
+        ]
+
         if "platform" not in df.columns or "label" not in df.columns:
             raise KeyError("DataFrame harus memiliki kolom 'platform' dan 'label'.")
 
+        if df.empty or len(df["platform"].dropna().unique()) == 0:
+            return pd.DataFrame(columns=cols)
+
         records = []
-        platforms = df["platform"].unique()
+        platforms = df["platform"].dropna().unique()
 
         for p in platforms:
             sub_df = df[df["platform"] == p]
@@ -194,7 +207,7 @@ class SentimentVisualizer:
             # Rumus Net Sentiment Score (NSS)
             nss = pct_pos - pct_neg
 
-            avg_rating = float(sub_df["rating"].mean()) if "rating" in sub_df.columns else 0.0
+            avg_rating = float(sub_df["rating"].mean()) if "rating" in sub_df.columns and not sub_df["rating"].empty else 0.0
 
             records.append({
                 "platform": p,
@@ -213,26 +226,30 @@ class SentimentVisualizer:
         metrics_df = pd.DataFrame(records).sort_values("nss", ascending=False).reset_index(drop=True)
 
         # Simpan ke file JSON metrik
-        metrics_dict = metrics_df.to_dict(orient="records")
-        try:
-            with open(config.COMPARISON_METRICS_PATH, "w", encoding="utf-8") as f:
-                json.dump(metrics_dict, f, ensure_ascii=False, indent=2)
-            logger.info(f"Metrik komparatif disimpan ke: {config.COMPARISON_METRICS_PATH}")
-        except Exception as e:
-            logger.warning(f"Gagal menyimpan komparasi_metrics.json: {e}")
+        if save_json:
+            metrics_dict = metrics_df.to_dict(orient="records")
+            try:
+                with open(config.COMPARISON_METRICS_PATH, "w", encoding="utf-8") as f:
+                    json.dump(metrics_dict, f, ensure_ascii=False, indent=2)
+                logger.info(f"Metrik komparatif disimpan ke: {config.COMPARISON_METRICS_PATH}")
+            except Exception as e:
+                logger.warning(f"Gagal menyimpan komparasi_metrics.json: {e}")
 
         return metrics_df
+
 
     def plot_comparison_sentiment_distribution(
         self,
         df: pd.DataFrame,
-        save_path: Optional[Path] = None
+        save_path: Optional[Path] = None,
+        metrics_df: Optional[pd.DataFrame] = None
     ) -> Path:
         """
         Membuat diagram batang komparasi proporsi sentimen untuk seluruh platform secara berdampingan.
         """
         target_path = save_path or config.COMPARISON_SENTIMENT_PATH
-        metrics_df = self.calculate_platform_metrics(df)
+        if metrics_df is None:
+            metrics_df = self.calculate_platform_metrics(df, save_json=False)
 
         # Siapkan data untuk grouped bar chart
         platforms = metrics_df["nama_platform"].tolist()
@@ -280,17 +297,22 @@ class SentimentVisualizer:
     def plot_comparison_nss(
         self,
         df: pd.DataFrame,
-        save_path: Optional[Path] = None
+        save_path: Optional[Path] = None,
+        metrics_df: Optional[pd.DataFrame] = None
     ) -> Path:
         """
         Membuat visualisasi Benchmark Net Sentiment Score (NSS = % Positif - % Negatif)
         antar-platform e-commerce dalam bentuk horizontal bar chart terurut.
         """
         target_path = save_path or config.COMPARISON_NSS_PATH
-        metrics_df = self.calculate_platform_metrics(df).sort_values("nss", ascending=True)
+        if metrics_df is None:
+            calc_df = self.calculate_platform_metrics(df, save_json=False)
+        else:
+            calc_df = metrics_df.copy()
+        sorted_metrics = calc_df.sort_values("nss", ascending=True)
 
-        platforms = metrics_df["nama_platform"].tolist()
-        nss_values = metrics_df["nss"].tolist()
+        platforms = sorted_metrics["nama_platform"].tolist()
+        nss_values = sorted_metrics["nss"].tolist()
 
         # Warna kondisional: Hijau untuk positif, Merah untuk negatif, Abu untuk netral
         bar_colors = ["#27ae60" if val >= 0 else "#c0392b" for val in nss_values]
@@ -322,15 +344,18 @@ class SentimentVisualizer:
         ax.set_xlim(-105, 105)
         ax.grid(axis="x", linestyle="--", alpha=0.6)
 
-        # Anotasi zona kepuasan
-        ax.text(50, len(platforms) - 0.5, "▲ Zona Kepuasan Tinggi", color="#27ae60", fontweight="bold", ha="center")
-        ax.text(-50, len(platforms) - 0.5, "▼ Zona Keluhan Dominan", color="#c0392b", fontweight="bold", ha="center")
+        # Anotasi zona kepuasan dengan batas y yang tidak terpotong
+        if len(platforms) > 0:
+            ax.set_ylim(-0.8, len(platforms) + 0.3)
+            ax.text(50, len(platforms) - 0.5, "▲ Zona Kepuasan Tinggi", color="#27ae60", fontweight="bold", ha="center")
+            ax.text(-50, len(platforms) - 0.5, "▼ Zona Keluhan Dominan", color="#c0392b", fontweight="bold", ha="center")
 
         plt.tight_layout()
         plt.savefig(target_path, dpi=300)
         plt.close()
         logger.info(f"Grafik benchmark NSS disimpan ke: {target_path}")
         return target_path
+
 
     def plot_platform_pain_points_grid(
         self,
@@ -450,11 +475,12 @@ class SentimentVisualizer:
         Pipeline lengkap eksekusi seluruh analisis & visualisasi komparatif multi-platform.
         """
         logger.info(f"Menjalankan visualisasi komparatif untuk {df['platform'].nunique()} platform...")
-        metrics_df = self.calculate_platform_metrics(df)
-        dist_path = self.plot_comparison_sentiment_distribution(df)
-        nss_path = self.plot_comparison_nss(df)
+        metrics_df = self.calculate_platform_metrics(df, save_json=True)
+        dist_path = self.plot_comparison_sentiment_distribution(df, metrics_df=metrics_df)
+        nss_path = self.plot_comparison_nss(df, metrics_df=metrics_df)
         grid_path = self.plot_platform_pain_points_grid(df)
         individual_clouds = self.plot_individual_platform_wordclouds(df)
+
 
         return {
             "metrics_df": metrics_df,

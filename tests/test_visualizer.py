@@ -109,6 +109,21 @@ class TestSentimentVisualizer(unittest.TestCase):
         self.assertTrue(Path(res_path).exists())
         self.assertGreater(Path(res_path).stat().st_size, 0)
 
+    def test_empty_dataframe_metrics(self):
+        """Memverifikasi bahwa DataFrame kosong tidak memicu KeyError: 'nss'."""
+        empty_df = pd.DataFrame(columns=["platform", "label", "teks_ulasan", "rating"])
+        metrics_df = self.visualizer.calculate_platform_metrics(empty_df, save_json=False)
+        self.assertTrue(metrics_df.empty)
+        self.assertIn("nss", metrics_df.columns)
+        self.assertIn("platform", metrics_df.columns)
+
+    def test_empty_dataframe_distribution(self):
+        """Memverifikasi bahwa DataFrame kosong tidak memicu ZeroDivisionError."""
+        empty_df = pd.DataFrame(columns=["label"])
+        res = self.visualizer.plot_distribution(empty_df)
+        self.assertIsNone(res)
+
 
 if __name__ == "__main__":
     unittest.main()
+

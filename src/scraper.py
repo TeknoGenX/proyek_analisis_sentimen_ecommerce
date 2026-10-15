@@ -223,17 +223,29 @@ def scrape_playstore_reviews(
 
     except Exception as e:
         logger.error(f"Gagal melakukan scraping Play Store untuk [{name}]: {e}")
-        # Coba fallback ke file lokal jika ada
+        # 1. Coba gunakan file save_path lokal jika ada
         if save_path and Path(save_path).exists():
             logger.warning(f"Menggunakan dataset lokal di: {save_path}")
-            return pd.read_csv(save_path)
-        if config.RAW_DATASET_PATH.exists():
+            return load_dataset(save_path)
+
+        # 2. Jika platform adalah DEFAULT_PLATFORM (Tokopedia), gunakan RAW_DATASET_PATH
+        if key == config.DEFAULT_PLATFORM and config.RAW_DATASET_PATH.exists():
             logger.warning(f"Menggunakan dataset lokal cadangan di: {config.RAW_DATASET_PATH}")
-            fallback_df = pd.read_csv(config.RAW_DATASET_PATH)
-            if "platform" not in fallback_df.columns:
-                fallback_df["platform"] = key
+            fallback_df = load_dataset(config.RAW_DATASET_PATH)
             return fallback_df
+
+        # 3. Jika platform lain, periksa apakah ada data platform terkait di dataset komparasi lokal
+        if config.COMPARISON_RAW_DATASET_PATH.exists():
+            comp_df = pd.read_csv(config.COMPARISON_RAW_DATASET_PATH)
+            if "platform" in comp_df.columns and key in comp_df["platform"].values:
+                logger.warning(f"Menggunakan ulasan platform '{key}' dari dataset komparasi lokal.")
+                matched_df = comp_df[comp_df["platform"] == key].copy()
+                if "label" not in matched_df.columns and "rating" in matched_df.columns:
+                    matched_df["label"] = matched_df["rating"].astype(int).apply(rating_to_sentiment)
+                return matched_df
+
         raise e
+
 
 
 def scrape_multi_platforms(
@@ -324,11 +336,12 @@ def load_dataset(csv_path: Optional[Union[str, Path]] = None) -> pd.DataFrame:
     """
     path = csv_path or config.RAW_DATASET_PATH
     if not Path(path).exists():
-        # Coba cek apakah dataset komparasi ada
-        if config.COMPARISON_RAW_DATASET_PATH.exists():
+        # Fallback ke dataset komparasi HANYA jika csv_path tidak ditentukan (None)
+        if csv_path is None and config.COMPARISON_RAW_DATASET_PATH.exists():
             path = config.COMPARISON_RAW_DATASET_PATH
         else:
             raise FileNotFoundError(f"File dataset tidak ditemukan di: {path}")
+
 
     df = pd.read_csv(path)
 
