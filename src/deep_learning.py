@@ -40,14 +40,22 @@ def train_deep_learning_model(
     
     # Filter biner (positif vs negatif) untuk model NNLM biner
     df_binary = df[df["label"].isin(["positif", "negatif"])].copy()
+    if len(df_binary) < 4 or df_binary["label"].nunique() < 2:
+        logger.warning("Jumlah data biner tidak mencukupi untuk melatih model Deep Learning.")
+        return
+
     df_binary["target"] = df_binary["label"].apply(lambda x: 1 if x == "positif" else 0)
+
+    class_counts = df_binary["target"].value_counts()
+    can_stratify = class_counts.min() >= 2
+    stratify_arg = df_binary["target"].values if can_stratify else None
 
     X_train, X_val, y_train, y_val = train_test_split(
         df_binary["clean_review"].values,
         df_binary["target"].values,
         test_size=config.TEST_SIZE,
         random_state=config.RANDOM_STATE,
-        stratify=df_binary["target"].values
+        stratify=stratify_arg
     )
 
     print("\n" + "=" * 60)
@@ -84,6 +92,7 @@ def train_deep_learning_model(
     model.summary()
 
     save_model_file = output_model_path or (config.MODELS_DIR / "deep_learning_sentiment.keras")
+    save_model_file.parent.mkdir(parents=True, exist_ok=True)
     checkpoint = keras.callbacks.ModelCheckpoint(
         filepath=str(save_model_file),
         monitor="val_loss",

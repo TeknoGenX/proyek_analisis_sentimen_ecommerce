@@ -18,11 +18,18 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 
-def rating_to_sentiment(rating: int) -> str:
-    """Mengubah rating bintang 1-5 menjadi label sentimen."""
-    if rating <= 2:
+def rating_to_sentiment(rating: Union[int, float, str, None]) -> str:
+    """Mengubah rating bintang 1-5 menjadi label sentimen secara aman."""
+    if rating is None or pd.isna(rating):
+        return "netral"
+    try:
+        r = float(rating)
+    except (ValueError, TypeError):
+        return "netral"
+
+    if r <= 2.0:
         return "negatif"
-    elif rating == 3:
+    elif r == 3.0:
         return "netral"
     else:
         return "positif"
@@ -90,6 +97,62 @@ def resolve_platform_info(
     return def_key, def_info["name"], def_info["app_id"]
 
 
+def _fetch_reviews_filtered(
+    target_app_id: str,
+    lang: str,
+    country: str,
+    target_count: int,
+    filter_score: Optional[int] = None,
+    is_tiktok: bool = False,
+    filter_tiktok: bool = True
+) -> List[dict]:
+    """Helper internal untuk mengambil ulasan dengan paginasi dan filter rating bintang tertentu."""
+    collected = []
+    continuation_token = None
+    max_attempts = max(target_count * 8, 2000) if (is_tiktok and filter_tiktok) else max(target_count * 3, 600)
+    fetched_total = 0
+
+    while len(collected) < target_count and fetched_total < max_attempts:
+        batch_size = min(200, max(50, (target_count - len(collected)) * 2 if is_tiktok else target_count - len(collected)))
+        try:
+            if continuation_token is None:
+                raw_batch, continuation_token = reviews(
+                    target_app_id,
+                    lang=lang,
+                    country=country,
+                    sort=Sort.NEWEST,
+                    count=batch_size,
+                    filter_score_with=filter_score
+                )
+            else:
+                raw_batch, continuation_token = reviews(
+                    target_app_id,
+                    continuation_token=continuation_token
+                )
+        except Exception as err:
+            logger.warning(f"Batch fetch error (app: {target_app_id}, score={filter_score}): {err}")
+            break
+
+        if not raw_batch:
+            break
+
+        fetched_total += len(raw_batch)
+
+        if is_tiktok and filter_tiktok:
+            batch_df = pd.DataFrame(raw_batch)
+            if "content" in batch_df.columns:
+                batch_df = batch_df.rename(columns={"content": "teks_ulasan"})
+                batch_filtered = filter_tiktok_commerce_reviews(batch_df)
+                collected.extend(batch_filtered.to_dict("records"))
+        else:
+            collected.extend(raw_batch)
+
+        if continuation_token is None:
+            break
+
+    return collected[:target_count]
+
+
 def scrape_playstore_reviews(
     app_id: Optional[str] = None,
     platform_key: Optional[str] = None,
@@ -97,10 +160,13 @@ def scrape_playstore_reviews(
     lang: str = config.SCRAPE_LANG,
     country: str = config.SCRAPE_COUNTRY,
     save_path: Optional[str] = None,
-    filter_tiktok: bool = True
+    filter_tiktok: bool = True,
+    balanced: bool = False,
+    filter_score: Optional[int] = None
 ) -> pd.DataFrame:
     """
     Mengambil data ulasan terbaru dari Google Play Store untuk satu platform.
+    Mendukung scraping seimbang (balanced) antar 3 kelas sentimen dan filter rating bintang tertentu.
     
     Args:
         app_id: Application ID di Play Store (opsional jika platform_key diisi)
@@ -110,6 +176,8 @@ def scrape_playstore_reviews(
         country: Negara asal ulasan (default: id)
         save_path: Lokasi penyimpanan CSV (opsional)
         filter_tiktok: Jika True dan platform adalah TikTok, terapkan filter transaksi e-commerce
+        balanced: Jika True, seimbangkan proporsi ulasan negatif (1-2), netral (3), dan positif (4-5)
+        filter_score: Opsional, filter hanya ulasan dengan bintang 1-5 tertentu (misal: 3 untuk netral)
         
     Returns:
         DataFrame berisi kolom ['teks_ulasan', 'rating', 'label', 'platform', 'tanggal', 'thumbs_up']
@@ -117,14 +185,49 @@ def scrape_playstore_reviews(
     key, name, target_app_id = resolve_platform_info(platform_key, app_id)
     is_tiktok = (key == "tiktok_shop" or target_app_id == config.ECOMMERCE_PLATFORMS["tiktok_shop"]["app_id"])
     
-    logger.info(f"Memulai scraping {count} ulasan untuk platform [{name}] (App ID: {target_app_id})...")
+    mode_desc = f" (Filter Bintang: {filter_score})" if filter_score else (" [BALANCED 3-KELAS]" if balanced else "")
+    logger.info(f"Memulai scraping {count} ulasan{mode_desc} untuk platform [{name}] (App ID: {target_app_id})...")
 
     try:
-        all_reviews = []
-        continuation_token = None
-        
-        # Untuk TikTok Shop, lakukan penarikan bertahap jika filter aktif agar target count terpenuhi
-        if is_tiktok and filter_tiktok:
+        if filter_score is not None:
+            raw_results = _fetch_reviews_filtered(
+                target_app_id=target_app_id,
+                lang=lang,
+                country=country,
+                target_count=count,
+                filter_score=filter_score,
+                is_tiktok=is_tiktok,
+                filter_tiktok=filter_tiktok
+            )
+        elif balanced:
+            # Proporsi seimbang 3 kelas: Negatif (1&2), Netral (3), Positif (4&5)
+            n_neu = count // 3
+            n_neg = count // 3
+            n_pos = count - n_neu - n_neg
+
+            neg_1 = n_neg // 2
+            neg_2 = n_neg - neg_1
+            pos_4 = n_pos // 2
+            pos_5 = n_pos - pos_4
+
+            r_neg1 = _fetch_reviews_filtered(target_app_id, lang, country, neg_1, filter_score=1, is_tiktok=is_tiktok, filter_tiktok=filter_tiktok)
+            r_neg2 = _fetch_reviews_filtered(target_app_id, lang, country, neg_2, filter_score=2, is_tiktok=is_tiktok, filter_tiktok=filter_tiktok)
+            r_neu = _fetch_reviews_filtered(target_app_id, lang, country, n_neu, filter_score=3, is_tiktok=is_tiktok, filter_tiktok=filter_tiktok)
+            r_pos4 = _fetch_reviews_filtered(target_app_id, lang, country, pos_4, filter_score=4, is_tiktok=is_tiktok, filter_tiktok=filter_tiktok)
+            r_pos5 = _fetch_reviews_filtered(target_app_id, lang, country, pos_5, filter_score=5, is_tiktok=is_tiktok, filter_tiktok=filter_tiktok)
+
+            combined_raw = r_neg1 + r_neg2 + r_neu + r_pos4 + r_pos5
+            import random
+            random.seed(config.RANDOM_STATE)
+            random.shuffle(combined_raw)
+            raw_results = combined_raw[:count]
+            logger.info(
+                f"[{name}] Scraping Seimbang Selesai: Negatif={len(r_neg1)+len(r_neg2)}, "
+                f"Netral={len(r_neu)}, Positif={len(r_pos4)+len(r_pos5)}."
+            )
+        elif is_tiktok and filter_tiktok:
+            all_reviews = []
+            continuation_token = None
             max_fetch_attempts = max(count * 8, 2000)
             fetched_total = 0
             
@@ -203,8 +306,15 @@ def scrape_playstore_reviews(
         df = df.dropna(subset=["teks_ulasan"])
         df = df[df["teks_ulasan"].astype(str).str.strip() != ""]
 
-        # Beri label sentimen
-        df["label"] = df["rating"].astype(int).apply(rating_to_sentiment)
+        # Validasi dan konversi rating secara aman
+        if "rating" in df.columns:
+            df["rating"] = pd.to_numeric(df["rating"], errors="coerce")
+            df = df.dropna(subset=["rating"])
+            df["rating"] = df["rating"].astype(int)
+            df["label"] = df["rating"].apply(rating_to_sentiment)
+        else:
+            df["rating"] = 3
+            df["label"] = "netral"
 
         # Pilih urutan kolom standar
         cols_order = ["teks_ulasan", "rating", "label", "platform", "tanggal", "thumbs_up"]
@@ -236,12 +346,10 @@ def scrape_playstore_reviews(
 
         # 3. Jika platform lain, periksa apakah ada data platform terkait di dataset komparasi lokal
         if config.COMPARISON_RAW_DATASET_PATH.exists():
-            comp_df = pd.read_csv(config.COMPARISON_RAW_DATASET_PATH)
+            comp_df = load_dataset(config.COMPARISON_RAW_DATASET_PATH)
             if "platform" in comp_df.columns and key in comp_df["platform"].values:
                 logger.warning(f"Menggunakan ulasan platform '{key}' dari dataset komparasi lokal.")
                 matched_df = comp_df[comp_df["platform"] == key].copy()
-                if "label" not in matched_df.columns and "rating" in matched_df.columns:
-                    matched_df["label"] = matched_df["rating"].astype(int).apply(rating_to_sentiment)
                 return matched_df
 
         raise e
@@ -253,7 +361,9 @@ def scrape_multi_platforms(
     count_per_platform: int = config.DEFAULT_COMPARISON_SCRAPE_COUNT,
     max_workers: int = config.SCRAPE_MAX_WORKERS,
     save_path: Optional[str] = None,
-    filter_tiktok: bool = True
+    filter_tiktok: bool = True,
+    balanced: bool = False,
+    filter_score: Optional[int] = None
 ) -> pd.DataFrame:
     """
     Mengambil data ulasan dari beberapa platform e-commerce secara paralel.
@@ -265,6 +375,8 @@ def scrape_multi_platforms(
         max_workers: Jumlah thread paralel untuk mempercepat scraping
         save_path: Lokasi penyimpanan CSV gabungan
         filter_tiktok: Aktifkan filtering transaksi untuk TikTok Shop
+        balanced: Seimbangkan ulasan 3 kelas sentimen per platform
+        filter_score: Filter rating bintang tertentu (1-5) per platform
         
     Returns:
         Consolidated DataFrame berisi ulasan gabungan seluruh platform.
@@ -272,8 +384,9 @@ def scrape_multi_platforms(
     target_platforms = platforms or list(config.ECOMMERCE_PLATFORMS.keys())
     output_path = save_path or str(config.COMPARISON_RAW_DATASET_PATH)
     
+    mode_str = f" [BINTANG: {filter_score}]" if filter_score else (" [BALANCED 3-KELAS]" if balanced else "")
     logger.info(
-        f"Memulai scraping batch paralel untuk {len(target_platforms)} platform: "
+        f"Memulai scraping batch paralel untuk {len(target_platforms)} platform{mode_str}: "
         f"{', '.join(target_platforms)} (target {count_per_platform} ulasan/platform)..."
     )
 
@@ -285,6 +398,8 @@ def scrape_multi_platforms(
                 platform_key=platform_key,
                 count=count_per_platform,
                 filter_tiktok=filter_tiktok,
+                balanced=balanced,
+                filter_score=filter_score,
                 save_path=None
             )
             return df
@@ -345,16 +460,20 @@ def load_dataset(csv_path: Optional[Union[str, Path]] = None) -> pd.DataFrame:
 
     df = pd.read_csv(path)
 
-    # Standardisasi kolom jika format berbeda
-    if "content" in df.columns and "score" in df.columns:
-        df = df.rename(columns={"content": "teks_ulasan", "score": "rating"})
+    # Standardisasi kolom secara independen jika format berbeda
+    if "content" in df.columns and "teks_ulasan" not in df.columns:
+        df = df.rename(columns={"content": "teks_ulasan"})
+    if "score" in df.columns and "rating" not in df.columns:
+        df = df.rename(columns={"score": "rating"})
 
     if "teks_ulasan" not in df.columns:
         raise KeyError("Dataset harus memiliki kolom 'teks_ulasan' atau 'content'.")
 
-    # Jika label belum ada tapi ada rating
+    # Pastikan tipe rating aman dan beri label jika belum ada
+    if "rating" in df.columns:
+        df["rating"] = pd.to_numeric(df["rating"], errors="coerce")
     if "label" not in df.columns and "rating" in df.columns:
-        df["label"] = df["rating"].astype(int).apply(rating_to_sentiment)
+        df["label"] = df["rating"].apply(rating_to_sentiment)
 
     # Jika platform belum ada (dataset lama), beri default
     if "platform" not in df.columns:

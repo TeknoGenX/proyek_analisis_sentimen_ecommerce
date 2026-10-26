@@ -7,7 +7,12 @@ Penggunaan:
   python main.py train         # Melatih & memilih model terbaik (benchmarking)
   python main.py evaluate      # Menghasilkan visualisasi Confusion Matrix & WordCloud
   python main.py predict -t "..." # Memprediksi satu kalimat ulasan
+  python main.py aspect -t "..."  # Analisis sentimen berbasis aspek (ABSA: pengiriman, kualitas, dll)
+  python main.py predict-batch -i input.csv -o output.csv # Prediksi massal dari CSV/Excel
   python main.py interactive   # Mode interaktif di terminal dengan Rich UI
+  python main.py serve         # Jalankan REST API server (FastAPI & Swagger UI)
+  python main.py dashboard     # Jalankan Web Dashboard Interaktif (Streamlit)
+  python main.py report        # Generate Laporan Analitik Bisnis Eksekutif (HTML / PDF)
 """
 import argparse
 import sys
@@ -57,28 +62,36 @@ def cmd_scrape(args):
     filter_tiktok = not getattr(args, "no_filter_tiktok", False)
     workers = getattr(args, "workers", config.SCRAPE_MAX_WORKERS)
     count = getattr(args, "count", config.DEFAULT_SCRAPE_COUNT)
+    balanced = getattr(args, "balanced", False)
+    filter_score = getattr(args, "score", None)
     
     if platform == "all":
-        print(f"\n[*] Memulai scraping batch paralel untuk SELURUH 7 platform e-commerce...")
+        mode_str = f" [BINTANG: {filter_score}]" if filter_score else (" [BALANCED 3-KELAS]" if balanced else "")
+        print(f"\n[*] Memulai scraping batch paralel untuk SELURUH 7 platform e-commerce{mode_str}...")
         print(f"[*] Target: {count} ulasan/platform (Paralel {workers} workers)...")
         df = scrape_multi_platforms(
             count_per_platform=count,
             max_workers=workers,
             save_path=str(config.COMPARISON_RAW_DATASET_PATH),
-            filter_tiktok=filter_tiktok
+            filter_tiktok=filter_tiktok,
+            balanced=balanced,
+            filter_score=filter_score
         )
         print(f"[✓] Berhasil menyimpan dataset komparasi multi-platform ({len(df)} baris) ke: {config.COMPARISON_RAW_DATASET_PATH}")
         return df
     else:
         app_id = getattr(args, "app", None)
         target_display = platform or app_id or config.DEFAULT_PLATFORM
-        print(f"\n[*] Mengambil {count} ulasan dari Play Store untuk platform/app: {target_display}...")
+        mode_str = f" [BINTANG: {filter_score}]" if filter_score else (" [BALANCED 3-KELAS]" if balanced else "")
+        print(f"\n[*] Mengambil {count} ulasan dari Play Store untuk platform/app: {target_display}{mode_str}...")
         df = scrape_playstore_reviews(
             app_id=app_id,
             platform_key=platform,
             count=count,
             save_path=str(config.RAW_DATASET_PATH),
-            filter_tiktok=filter_tiktok
+            filter_tiktok=filter_tiktok,
+            balanced=balanced,
+            filter_score=filter_score
         )
         print(f"[✓] Berhasil menyimpan dataset mentah ke: {config.RAW_DATASET_PATH}")
         return df
@@ -112,8 +125,10 @@ def cmd_preprocess(args):
             comp_df = comp_df.rename(columns={"content": "teks_ulasan", "score": "rating"})
         if "teks_ulasan" in comp_df.columns:
             comp_df["clean_review"] = comp_df["teks_ulasan"].apply(preprocessor.clean)
+            if "rating" in comp_df.columns:
+                comp_df["rating"] = pd.to_numeric(comp_df["rating"], errors="coerce")
             if "label" not in comp_df.columns and "rating" in comp_df.columns:
-                comp_df["label"] = comp_df["rating"].astype(int).apply(rating_to_sentiment)
+                comp_df["label"] = comp_df["rating"].apply(rating_to_sentiment)
             comp_df = comp_df[comp_df["clean_review"].str.strip() != ""]
             comp_df.to_csv(config.COMPARISON_PROCESSED_DATASET_PATH, index=False)
             print(f"[✓] Dataset komparasi bersih disimpan ke: {config.COMPARISON_PROCESSED_DATASET_PATH}")
@@ -181,7 +196,7 @@ def cmd_evaluate(args):
     viz = SentimentVisualizer()
     
     # 1. Evaluasi Model Machine Learning jika model & dataset pemodelan tersedia
-    if config.PROCESSED_DATASET_PATH.exists() and config.MODEL_PATH.exists():
+    if config.PROCESSED_DATASET_PATH.exists() and config.MODEL_PATH.exists() and config.VECTORIZER_PATH.exists():
         df = pd.read_csv(config.PROCESSED_DATASET_PATH).dropna(subset=["clean_review", "label"])
         X = df["clean_review"]
         y = df["label"]
@@ -205,12 +220,12 @@ def cmd_evaluate(args):
         viz.plot_positive_highlights_wordcloud(df)
         viz.plot_distribution(df)
     else:
-        print("[!] File dataset bersih atau model belum lengkap untuk evaluasi Confusion Matrix.")
+        print("[!] File dataset bersih, model, atau TF-IDF vectorizer belum lengkap untuk evaluasi Confusion Matrix.")
 
     # 2. Visualisasi Komparasi Multi-Platform jika dataset komparasi tersedia
     comp_file = config.COMPARISON_PROCESSED_DATASET_PATH if config.COMPARISON_PROCESSED_DATASET_PATH.exists() else config.COMPARISON_RAW_DATASET_PATH
     if comp_file.exists():
-        comp_df = pd.read_csv(comp_file)
+        comp_df = load_dataset(comp_file)
         if "platform" in comp_df.columns and comp_df["platform"].nunique() > 1:
             print("\n[*] Menghasilkan analisis & visualisasi komparatif multi-platform...")
             res_comp = viz.plot_all_comparative_analytics(comp_df)
@@ -277,6 +292,116 @@ def cmd_predict(args):
         print("=" * 50)
 
 
+def cmd_aspect(args):
+    """Menganalisis sentimen berbasis aspek (ABSA) pada satu teks ulasan."""
+    if not config.MODEL_PATH.exists() or not config.VECTORIZER_PATH.exists():
+        print("[!] Model atau TF-IDF vectorizer belum dilatih.")
+        print("[*] Silakan jalankan 'python main.py train' terlebih dahulu.")
+        return
+
+    predictor = SentimentPredictor()
+    res = predictor.analyze_aspects(args.text)
+
+    aspects = res.get("aspek_terdeteksi", {})
+
+    if HAS_RICH:
+        tbl = Table(title="Hasil Aspect-Based Sentiment Analysis (ABSA)", border_style="cyan")
+        tbl.add_column("Aspek", style="bold")
+        tbl.add_column("Sentimen", justify="center")
+        tbl.add_column("Keyakinan", justify="right")
+        tbl.add_column("Klausa Bukti Pendukung")
+
+        if not aspects:
+            tbl.add_row("-", "[yellow]TIDAK TERDETEKSI[/yellow]", "-", "Tidak ada aspek spesifik yang terdeteksi")
+        else:
+            for asp_key, data in aspects.items():
+                sent = data["sentimen"].upper()
+                color = "green" if sent == "POSITIF" else ("red" if sent == "NEGATIF" else "yellow")
+                tbl.add_row(
+                    data["nama_aspek"],
+                    f"[{color}]{sent}[/{color}]",
+                    f"{data['keyakinan']:.1f}%",
+                    ", ".join(f"'{k}'" for k in data["klausa_pendukung"])
+                )
+        console.print(f"\n[bold]Ulasan Asli:[/bold] \"{args.text}\"")
+        console.print(tbl)
+    else:
+        print("\n" + "=" * 60)
+        print("HASIL ASPECT-BASED SENTIMENT ANALYSIS (ABSA)")
+        print("=" * 60)
+        print(f"Ulasan Asli: \"{args.text}\"")
+        print("-" * 60)
+        if not aspects:
+            print("Tidak ada aspek spesifik e-commerce yang terdeteksi dalam ulasan ini.")
+        else:
+            for asp_key, data in aspects.items():
+                sent = data["sentimen"].upper()
+                klausa = ", ".join(f"'{k}'" for k in data["klausa_pendukung"])
+                print(f"• Aspek    : {data['nama_aspek']}")
+                print(f"  Sentimen : {sent} ({data['keyakinan']:.1f}%)")
+                print(f"  Bukti    : {klausa}")
+        print("=" * 60)
+
+
+def cmd_predict_batch(args):
+    """Memprediksi sentimen ulasan secara massal dari file CSV atau Excel."""
+    if not config.MODEL_PATH.exists() or not config.VECTORIZER_PATH.exists():
+        print("[!] Model atau TF-IDF vectorizer belum dilatih.")
+        print("[*] Silakan jalankan 'python main.py train' terlebih dahulu.")
+        return
+
+    input_file = Path(args.input)
+    if not input_file.exists():
+        print(f"[!] File input tidak ditemukan: {input_file}")
+        return
+
+    output_file = Path(args.output) if getattr(args, "output", None) else None
+    text_col = getattr(args, "text_column", None)
+
+    print(f"\n[*] Memulai inferensi batch dari file: {input_file}")
+    predictor = SentimentPredictor()
+
+    try:
+        result_df, saved_path = predictor.predict_file(
+            input_path=input_file,
+            output_path=output_file,
+            text_column=text_col
+        )
+    except Exception as e:
+        print(f"[!] Gagal melakukan inferensi batch: {e}")
+        return
+
+    total = len(result_df)
+    counts = result_df["prediksi_sentimen"].value_counts().to_dict()
+    pos = counts.get("positif", 0)
+    neu = counts.get("netral", 0)
+    neg = counts.get("negatif", 0)
+    avg_conf = float(result_df["keyakinan"].mean()) if "keyakinan" in result_df.columns and not result_df.empty else 0.0
+
+    if HAS_RICH:
+        tbl = Table(title="Ringkasan Hasil Prediksi Batch", border_style="cyan")
+        tbl.add_column("Metrik", style="bold")
+        tbl.add_column("Nilai", justify="right")
+        tbl.add_row("Total Ulasan Diproses", str(total))
+        tbl.add_row("Sentimen Positif", f"[green]{pos} ({pos/total*100:.1f}%)[/green]" if total > 0 else "0")
+        tbl.add_row("Sentimen Netral", f"[yellow]{neu} ({neu/total*100:.1f}%)[/yellow]" if total > 0 else "0")
+        tbl.add_row("Sentimen Negatif", f"[red]{neg} ({neg/total*100:.1f}%)[/red]" if total > 0 else "0")
+        tbl.add_row("Rata-rata Keyakinan", f"{avg_conf:.2f}%")
+        tbl.add_row("File Output", f"[bold cyan]{saved_path}[/bold cyan]")
+        console.print(tbl)
+    else:
+        print("\n" + "=" * 55)
+        print("RINGKASAN HASIL PREDIKSI BATCH")
+        print("=" * 55)
+        print(f"Total Ulasan Diproses : {total}")
+        print(f"Sentimen Positif      : {pos} ({pos/total*100:.1f}%)" if total > 0 else "0")
+        print(f"Sentimen Netral       : {neu} ({neu/total*100:.1f}%)" if total > 0 else "0")
+        print(f"Sentimen Negatif      : {neg} ({neg/total*100:.1f}%)" if total > 0 else "0")
+        print(f"Rata-rata Keyakinan   : {avg_conf:.2f}%")
+        print(f"File Hasil Disimpan   : {saved_path}")
+        print("=" * 55)
+
+
 def cmd_interactive(args):
     """Mode pengujian sentimen real-time interaktif di terminal."""
     if not config.MODEL_PATH.exists() or not config.VECTORIZER_PATH.exists():
@@ -321,6 +446,72 @@ def cmd_interactive(args):
             break
 
 
+def cmd_serve(args):
+    """Menjalankan REST API Server menggunakan Uvicorn."""
+    try:
+        import uvicorn
+    except ImportError:
+        print("[!] Paket uvicorn belum terpasang. Silakan jalankan 'pip install uvicorn fastapi'.")
+        return
+
+    host = getattr(args, "host", "0.0.0.0")
+    port = getattr(args, "port", 8000)
+    reload = getattr(args, "reload", False)
+
+    print("\n" + "=" * 60)
+    print(" MENJALANKAN REST API ANALISIS SENTIMEN (FastAPI) ".center(60, "="))
+    print("=" * 60)
+    print(f"[*] Host: http://{host}:{port}")
+    print(f"[*] Dokumentasi Swagger UI: http://{host}:{port}/docs")
+    print(f"[*] Dokumentasi ReDoc     : http://{host}:{port}/redoc")
+    print(f"[*] Status Healthcheck    : http://{host}:{port}/health")
+    print("=" * 60)
+
+    uvicorn.run("src.api:app", host=host, port=port, reload=reload)
+
+
+def cmd_dashboard(args):
+    """Menjalankan Web Dashboard Interaktif menggunakan Streamlit."""
+    import subprocess
+    port = getattr(args, "port", 8501)
+    app_file = ROOT_DIR / "app.py"
+
+    print("\n" + "=" * 60)
+    print(" MENJALANKAN DASHBOARD SENTIMEN E-COMMERCE (Streamlit) ".center(60, "="))
+    print("=" * 60)
+    print(f"[*] Dashboard URL : http://localhost:{port}")
+    print(f"[*] File Aplikasi : {app_file}")
+    print("=" * 60)
+
+    cmd = [sys.executable, "-m", "streamlit", "run", str(app_file), "--server.port", str(port)]
+    try:
+        subprocess.run(cmd)
+    except KeyboardInterrupt:
+        print("\nDashboard dihentikan.")
+
+
+def cmd_report(args):
+    """Menghasilkan Laporan Analitik Bisnis Eksekutif dalam format HTML & Siap Cetak PDF."""
+    from src.report_generator import generate_business_report
+    out_path = getattr(args, "output", None)
+    open_browser = getattr(args, "open", False)
+
+    print("\n" + "=" * 60)
+    print(" GENERATOR LAPORAN BISNIS EKSEKUTIF E-COMMERCE ".center(60, "="))
+    print("=" * 60)
+    print("[*] Mengompilasi data sentimen, benchmark platform, metrik ML, dan visualisasi...")
+
+    report_file = generate_business_report(output_path=out_path)
+    print(f"[✓] Laporan HTML berhasil dibuat!")
+    print(f"[✓] File tersimpan di : {report_file}")
+    print(f"[*] Anda dapat membuka file ini di browser dan menekan Ctrl+P untuk mencetak ke PDF.")
+
+    if open_browser:
+        import webbrowser
+        print(f"[*] Membuka laporan di browser default...")
+        webbrowser.open(f"file://{report_file.resolve()}")
+
+
 def cmd_run_all(args):
     """Menjalankan seluruh pipeline End-to-End."""
     print_banner()
@@ -341,10 +532,13 @@ def cmd_run_all(args):
             # Validasi apakah dataset cukup dan memiliki kelas beragam
             if len(raw_check) < 30 or "label" not in raw_check.columns or raw_check["label"].nunique() < 2:
                 print(f"[!] Dataset di {config.RAW_DATASET_PATH} terlalu kecil ({len(raw_check)} baris) atau hanya 1 kelas.")
+                comp_csv = config.COMPARISON_RAW_DATASET_PATH
                 parent_csv = config.BASE_DIR.parent / "dataset_ulasan.csv"
-                if parent_csv.exists() and len(pd.read_csv(parent_csv)) >= 50:
-                    print(f"[*] Mengimpor dataset ulasan representatif dari {parent_csv}...")
-                    valid_df = load_dataset(parent_csv)
+                legacy_csv = config.BASE_DIR.parent / "nlp_sentimen_app" / "dataset_ulasan.csv"
+                target_csv = comp_csv if comp_csv.exists() else (parent_csv if parent_csv.exists() else legacy_csv)
+                if target_csv.exists() and len(pd.read_csv(target_csv)) >= 50:
+                    print(f"[*] Mengimpor dataset ulasan representatif dari {target_csv}...")
+                    valid_df = load_dataset(target_csv)
                     valid_df.to_csv(config.RAW_DATASET_PATH, index=False)
                     print(f"[✓] Berhasil memuat {len(valid_df)} ulasan ke {config.RAW_DATASET_PATH}")
                 else:
@@ -422,8 +616,33 @@ def main():
     p_pred = subparsers.add_parser("predict", help="Prediksi sentimen untuk satu kalimat ulasan")
     p_pred.add_argument("-t", "--text", required=True, help="Teks ulasan yang akan dianalisis")
 
+    # Command: aspect
+    p_aspect = subparsers.add_parser("aspect", help="Analisis sentimen berbasis aspek (ABSA: pengiriman, kualitas, harga, CS, app)")
+    p_aspect.add_argument("-t", "--text", required=True, help="Teks ulasan yang akan dianalisis per aspek")
+
+    # Command: predict-batch
+    p_batch = subparsers.add_parser("predict-batch", help="Prediksi sentimen massal dari file CSV atau Excel")
+    p_batch.add_argument("-i", "--input", required=True, help="Path ke file input ulasan (.csv atau .xlsx)")
+    p_batch.add_argument("-o", "--output", default=None, help="Path ke file output hasil prediksi (opsional, default: outputs/prediksi_<nama_file>.csv)")
+    p_batch.add_argument("-c", "--text-column", default=None, help="Nama kolom teks ulasan (opsional, otomatis dideteksi jika tidak diisi)")
+
     # Command: interactive
     subparsers.add_parser("interactive", help="Mode uji coba sentimen langsung di terminal")
+
+    # Command: serve
+    p_serve = subparsers.add_parser("serve", help="Jalankan REST API Server (FastAPI + Swagger UI)")
+    p_serve.add_argument("--host", default="0.0.0.0", help="Host interface (default: 0.0.0.0)")
+    p_serve.add_argument("--port", type=int, default=8000, help="Port server (default: 8000)")
+    p_serve.add_argument("--reload", action="store_true", help="Aktifkan auto-reload saat file berubah")
+
+    # Command: dashboard
+    p_dash = subparsers.add_parser("dashboard", help="Jalankan Web Dashboard Interaktif (Streamlit)")
+    p_dash.add_argument("--port", type=int, default=8501, help="Port dashboard (default: 8501)")
+
+    # Command: report
+    p_rep = subparsers.add_parser("report", help="Generate Laporan Analitik Bisnis Eksekutif (HTML & Cetak PDF)")
+    p_rep.add_argument("-o", "--output", default=None, help="Path file output laporan (opsional, default: outputs/laporan_eksekutif_sentimen.html)")
+    p_rep.add_argument("--open", action="store_true", help="Buka laporan otomatis di browser default")
 
     args = parser.parse_args()
 
@@ -439,8 +658,18 @@ def main():
         cmd_evaluate(args)
     elif args.command == "predict":
         cmd_predict(args)
+    elif args.command == "aspect":
+        cmd_aspect(args)
+    elif args.command == "predict-batch":
+        cmd_predict_batch(args)
     elif args.command == "interactive":
         cmd_interactive(args)
+    elif args.command == "serve":
+        cmd_serve(args)
+    elif args.command == "dashboard":
+        cmd_dashboard(args)
+    elif args.command == "report":
+        cmd_report(args)
     else:
         parser.print_help()
 

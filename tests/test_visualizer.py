@@ -123,6 +123,45 @@ class TestSentimentVisualizer(unittest.TestCase):
         res = self.visualizer.plot_distribution(empty_df)
         self.assertIsNone(res)
 
+    def test_individual_wordclouds_with_nan_platform(self):
+        """Memverifikasi bahwa platform bernilai NaN tidak memicu error atau pembuatan WordCloud nan."""
+        import numpy as np
+        df_with_nan = pd.DataFrame({
+            "clean_review": ["aplikasi mantap", "jelek sekali"],
+            "label": ["positif", "negatif"],
+            "platform": ["tokopedia", np.nan]
+        })
+        saved = self.visualizer.plot_individual_platform_wordclouds(df_with_nan)
+        self.assertIn("tokopedia", saved)
+        self.assertNotIn(np.nan, saved)
+        self.assertNotIn("nan", saved)
+
+    def test_platform_pain_points_grid_with_nan_platform(self):
+        """Memverifikasi bahwa grid pain points menangani platform NaN tanpa crash."""
+        import numpy as np
+        df_with_nan = pd.DataFrame({
+            "clean_review": ["aplikasi mantap", "jelek sekali"],
+            "label": ["positif", "negatif"],
+            "platform": ["custom_app", np.nan]
+        })
+        save_file = self.test_output_dir / "test_grid_nan.png"
+        res = self.visualizer.plot_platform_pain_points_grid(df_with_nan, save_path=save_file)
+        self.assertIsNotNone(res)
+        self.assertTrue(Path(res).exists())
+
+    def test_platform_metrics_with_nan_ratings(self):
+        """Memverifikasi bahwa rating bernilai NaN menghasilkan rata_rata_rating 0.0 (bukan NaN)."""
+        import numpy as np
+        df_nan_rating = pd.DataFrame({
+            "clean_review": ["bagus mantap", "oke"],
+            "label": ["positif", "positif"],
+            "platform": ["tokopedia", "tokopedia"],
+            "rating": [np.nan, np.nan]
+        })
+        metrics_df = self.visualizer.calculate_platform_metrics(df_nan_rating, save_json=False)
+        self.assertEqual(len(metrics_df), 1)
+        self.assertEqual(metrics_df["rata_rata_rating"].iloc[0], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

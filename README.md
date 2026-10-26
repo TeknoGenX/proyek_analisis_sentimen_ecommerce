@@ -42,8 +42,22 @@ Proyek ini telah direfaktor dan dioptimalkan dari kode dasar sebelumnya menjadi 
    - Menyediakan API inferensi tunggal dan batch dengan skor keyakinan (*confidence score*).
    - Mode CLI interaktif dengan tampilan antarmuka visual terminal menggunakan `Rich`.
 
-7. **Deep Learning Transfer Learning (`src/deep_learning.py`)**:
-   - Modul eksperimen lanjutan menggunakan TensorFlow Hub `NNLM Bahasa Indonesia (128 dimensi)` untuk klasifikasi sentimen berbasis deep learning.
+7. **Aspect-Based Sentiment Analysis / ABSA (`src/aspect_analyzer.py`)**:
+   - Pemecahan klausa cerdas berbasis kata hubung (*tapi, namun, padahal, dan*).
+   - Klasifikasi sentimen tersendiri untuk 5 aspek e-commerce utama: *Pengiriman, Kualitas Produk, Harga & Promo, Pelayanan CS, Aplikasi & Sistem*.
+
+8. **Production REST API Server (`src/api.py`)**:
+   - Dibangun dengan FastAPI dan Uvicorn untuk melayani endpoint inferensi real-time, prediksi batch, ABSA, dan OpenAPI Swagger UI interaktif di browser.
+
+9. **Interactive Web Dashboard (`app.py` & `src/dashboard.py`)**:
+   - Dashboard analitik berbasis Streamlit untuk pengujian ulasan real-time, ABSA, batch file uploader (CSV/Excel), visualisasi distribusi sentimen, benchmark komparasi 7 platform, pratinjau laporan eksekutif, dan metrik model ML.
+
+10. **Automated Executive Business Report Generator (`src/report_generator.py`)**:
+    - Generator laporan bisnis analitik berformat HTML interaktif yang mandiri (*self-contained* dengan grafik Base64 tersemat).
+    - Dilengkapi *executive summary*, perbandingan KPI, peringkat NSS, analisis 5 aspek ABSA, dan *print-to-PDF friendly CSS* (`@media print`).
+
+11. **Deep Learning Transfer Learning (`src/deep_learning.py`)**:
+    - Modul eksperimen lanjutan menggunakan TensorFlow Hub `NNLM Bahasa Indonesia (128 dimensi)` untuk klasifikasi sentimen berbasis deep learning.
 
 ---
 
@@ -52,27 +66,34 @@ Proyek ini telah direfaktor dan dioptimalkan dari kode dasar sebelumnya menjadi 
 ```text
 proyek_analisis_sentimen_ecommerce/
 │
+├── app.py                        # Entrypoint Web Dashboard (Streamlit)
 ├── config.py                     # Konfigurasi terpusat (path, hyperparameter, label)
-├── main.py                       # CLI utama aplikasi
+├── main.py                       # CLI utama aplikasi (11 subcommands)
 ├── requirements.txt              # Daftar dependensi library
 ├── README.md                     # Dokumentasi lengkap proyek
 │
 ├── data/
 │   ├── raw/
-│   │   └── dataset_ulasan.csv    # Dataset mentah hasil scraping Play Store
+│   │   ├── dataset_ulasan.csv    # Dataset mentah ulasan Play Store
+│   │   └── dataset_komparasi_ecommerce.csv # Dataset 7 platform
 │   ├── processed/
-│   │   └── dataset_cleaned.csv   # Dataset hasil pembersihan & normalisasi
+│   │   ├── dataset_cleaned.csv   # Dataset hasil pembersihan & normalisasi
+│   │   └── dataset_komparasi_cleaned.csv
 │   └── slang_dict.json           # Kamus normalisasi kata gaul & slang e-commerce
 │
 ├── src/
 │   ├── __init__.py
-│   ├── scraper.py                # Modul scraper Google Play Store
-│   ├── preprocessor.py           # Preprocessing teks Indonesia + disk cache
+│   ├── api.py                    # REST API Server FastAPI (Swagger UI)
+│   ├── aspect_analyzer.py        # Aspect-Based Sentiment Analysis (ABSA)
+│   ├── dashboard.py              # Logika UI Web Dashboard (Streamlit)
+│   ├── deep_learning.py          # Modul Deep Learning NNLM ID (TensorFlow)
 │   ├── features.py               # Ekstraksi fitur TF-IDF (Unigram & Bigram)
 │   ├── model_trainer.py          # Benchmarking & pelatihan model ML
-│   ├── visualizer.py             # Visualisasi Confusion Matrix & WordCloud
 │   ├── predictor.py              # Engine inferensi & prediksi real-time
-│   └── deep_learning.py          # Modul Deep Learning NNLM ID (TensorFlow)
+│   ├── preprocessor.py           # Preprocessing teks Indonesia + disk cache
+│   ├── report_generator.py       # Generator Laporan Bisnis Eksekutif (HTML/PDF)
+│   ├── scraper.py                # Scraper Play Store (multi-platform & filter TikTok)
+│   └── visualizer.py             # Visualisasi Confusion Matrix, WordCloud, NSS
 │
 ├── models/
 │   ├── model_sentimen.pkl        # File bobot model ML terbaik
@@ -84,10 +105,23 @@ proyek_analisis_sentimen_ecommerce/
 │   ├── ConfusionMatrix.png       # Grafik Confusion Matrix
 │   ├── WordCloud_Keluhan.png     # WordCloud ulasan negatif (Pain Points)
 │   ├── WordCloud_Positif.png     # WordCloud ulasan positif
-│   └── distribusi_sentimen.png   # Diagram proporsi sentimen
+│   ├── distribusi_sentimen.png   # Diagram proporsi sentimen
+│   ├── komparasi_nss_platform.png # Grafik komparasi NSS 7 platform
+│   ├── komparasi_sentimen_platform.png # Komparasi proporsi sentimen
+│   ├── komparasi_wordcloud_keluhan.png # Grid WordCloud komparatif
+│   └── laporan_eksekutif_sentimen.html # Laporan Analitik Bisnis Eksekutif
 │
 └── tests/
-    └── test_preprocessor.py      # Unit test pengujian modul preprocessing
+    ├── test_api.py               # Unit test REST API FastAPI
+    ├── test_aspect_analyzer.py   # Unit test Aspect-Based Sentiment Analysis
+    ├── test_dashboard.py         # Unit test Web Dashboard Streamlit
+    ├── test_features.py          # Unit test ekstraksi fitur TF-IDF
+    ├── test_model_trainer.py     # Unit test pelatihan model ML
+    ├── test_predictor.py         # Unit test inference engine
+    ├── test_preprocessor.py      # Unit test pembersihan & slang normalizer
+    ├── test_report_generator.py  # Unit test generator laporan bisnis
+    ├── test_scraper.py           # Unit test scraping & fallback
+    └── test_visualizer.py        # Unit test grafik & WordCloud
 ```
 
 ---
@@ -98,10 +132,10 @@ proyek_analisis_sentimen_ecommerce/
 Gunakan virtual environment yang sudah ada atau buat baru:
 ```bash
 # Masuk ke folder proyek
-cd /home/andiliani/code/nlp_sentimen_app/proyek_analisis_sentimen_ecommerce
+cd /home/andiliani/code/proyek_analisis_sentimen_ecommerce
 
 # Aktifkan virtual environment
-source ../venv/bin/activate
+source venv/bin/activate
 
 # Install dependensi (jika belum)
 pip install -r requirements.txt
@@ -141,17 +175,75 @@ python main.py run-all
   python main.py predict -t "Barangnya rusak parah, seller dichat gak balas sama sekali!"
   ```
 
+- **Analisis Sentimen Berbasis Aspek (ABSA)**:
+  ```bash
+  python main.py aspect -t "Barang original bagus, tapi kurirnya lambat pengiriman telat."
+  ```
+
+- **Prediksi Massal / Batch Inference (CSV / Excel)**:
+  ```bash
+  # Prediksi massal dan ekspor hasil ke file CSV
+  python main.py predict-batch -i data/raw/dataset_ulasan.csv -o outputs/hasil_prediksi.csv
+
+  # Dapat juga menggunakan file Excel (.xlsx) dan menentukan kolom ulasan secara spesifik
+  python main.py predict-batch -i ulasan.xlsx -o outputs/hasil_prediksi.xlsx -c ulasan_customer
+  ```
+
 - **Mode Interaktif Terminal (Live Chatbot Testing)**:
   ```bash
   python main.py interactive
   ```
 
+- **Menjalankan Web Dashboard Interaktif (Streamlit)**:
+  ```bash
+  python main.py dashboard
+  # atau langsung dengan:
+  streamlit run app.py
+  ```
+  Akses di browser: [http://localhost:8501](http://localhost:8501)
+  - Fitur: Uji sentimen real-time, ABSA, batch uploader (CSV/Excel), visualisasi distribusi grafik, benchmark 7 platform, pratinjau & download laporan eksekutif, dan ringkasan metrik model ML.
+
+- **Menghasilkan Laporan Analitik Bisnis Eksekutif (HTML / PDF)**:
+  ```bash
+  # Generate laporan HTML mandiri (dengan visualisasi grafik tersemat)
+  python main.py report
+
+  # Generate dan langsung buka otomatis di browser
+  python main.py report --open
+  ```
+  *File laporan tersimpan di: `outputs/laporan_eksekutif_sentimen.html` (Dapat dicetak ke PDF dengan tombol cetak atau `Ctrl + P`).*
+
+- **Menjalankan REST API Server (FastAPI + Swagger UI)**:
+  ```bash
+  python main.py serve --port 8000
+  ```
+  Akses di browser:
+  - **Swagger UI (Interactive Docs)**: [http://localhost:8000/docs](http://localhost:8000/docs)
+  - **ReDoc**: [http://localhost:8000/redoc](http://localhost:8000/redoc)
+  - **Healthcheck**: `GET http://localhost:8000/health`
+  - **Single Prediction**: `POST http://localhost:8000/predict` (Body: `{"text": "..."}`)
+  - **Batch Prediction**: `POST http://localhost:8000/predict-batch` (Body: `{"texts": ["...", "..."]}`)
+  - **Aspect Sentiment**: `POST http://localhost:8000/analyze-aspects` (Body: `{"text": "..."}`)
+  - **Model Metrics**: `GET http://localhost:8000/metrics`
+  - **Platform Benchmarks**: `GET http://localhost:8000/platforms`
+  - **Executive Report HTML**: `GET http://localhost:8000/report/html`
+  - **Generate Report**: `POST http://localhost:8000/report/generate`
+
 ---
 
 ## 🧪 Menjalankan Unit Tests
-Uji keandalan modul pembersihan teks dan kamus slang:
+Jalankan seluruh test suite otomatis:
+```bash
+python -m unittest discover tests
+```
+Atau jalankan modul pengujian spesifik:
 ```bash
 python -m unittest tests/test_preprocessor.py
+python -m unittest tests/test_predictor.py
+python -m unittest tests/test_aspect_analyzer.py
+python -m unittest tests/test_dashboard.py
+python -m unittest tests/test_report_generator.py
+python -m unittest tests/test_api.py
 ```
 
 ---
@@ -167,4 +259,9 @@ hasil = predictor.predict_one("Bagus banget pengiriman cepat dan barang original
 print("Sentimen:", hasil["sentimen"])
 print("Keyakinan:", hasil["keyakinan"], "%")
 print("Rincian Probabilitas:", hasil["probabilitas"])
+
+# Atau untuk prediksi massal satu file sekaligus:
+hasil_df, saved_path = predictor.predict_file("input_ulasan.csv", "outputs/hasil.csv")
+print(f"Prediksi selesai! Disimpan ke: {saved_path}")
 ```
+

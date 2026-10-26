@@ -208,6 +208,8 @@ class SentimentVisualizer:
             nss = pct_pos - pct_neg
 
             avg_rating = float(sub_df["rating"].mean()) if "rating" in sub_df.columns and not sub_df["rating"].empty else 0.0
+            if pd.isna(avg_rating):
+                avg_rating = 0.0
 
             records.append({
                 "platform": p,
@@ -373,7 +375,7 @@ class SentimentVisualizer:
         # Ambil daftar platform yang ada di df atau default 7 platform
         platforms = [p for p in config.ECOMMERCE_PLATFORMS.keys() if p in df["platform"].values]
         if not platforms:
-            platforms = list(df["platform"].unique())
+            platforms = [p for p in df["platform"].dropna().unique() if str(p).strip() != ""]
 
         n_plats = len(platforms)
         if n_plats == 0:
@@ -436,7 +438,7 @@ class SentimentVisualizer:
         Disimpan di outputs/platform_wordclouds/.
         """
         text_col = "clean_review" if "clean_review" in df.columns else "teks_ulasan"
-        platforms = df["platform"].unique()
+        platforms = [p for p in df["platform"].dropna().unique() if str(p).strip() != ""]
         saved_files: Dict[str, Dict[str, Path]] = {}
 
         for p in platforms:

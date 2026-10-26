@@ -66,6 +66,50 @@ class TestScraperModule(unittest.TestCase):
         self.assertIn("label", df.columns)
         self.assertIn("platform", df.columns)
 
+    def test_rating_to_sentiment_edge_cases(self):
+        """Memverifikasi rating_to_sentiment terhadap nilai NaN, None, string, dan invalid."""
+        import numpy as np
+        self.assertEqual(rating_to_sentiment(None), "netral")
+        self.assertEqual(rating_to_sentiment(np.nan), "netral")
+        self.assertEqual(rating_to_sentiment("1"), "negatif")
+        self.assertEqual(rating_to_sentiment("5.0"), "positif")
+        self.assertEqual(rating_to_sentiment("bukan_angka"), "netral")
+
+    def test_load_dataset_independent_column_renaming(self):
+        """Memverifikasi bahwa kolom content dan score distandarisasi secara independen."""
+        import tempfile
+        # Kasus: hanya ada kolom 'content' dan 'rating' (tanpa 'score')
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("content,rating\nbarang bagus,5\nrusak parah,1\n")
+            temp_path = Path(f.name)
+
+        try:
+            df = load_dataset(temp_path)
+            self.assertIn("teks_ulasan", df.columns)
+            self.assertIn("rating", df.columns)
+            self.assertIn("label", df.columns)
+            self.assertEqual(df["label"].iloc[0], "positif")
+            self.assertEqual(df["label"].iloc[1], "negatif")
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+    def test_load_dataset_with_nan_ratings(self):
+        """Memverifikasi bahwa NaN pada rating tidak menimbulkan crash astype(int)."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("teks_ulasan,rating\nbarang mantap,\nproduk rusak,1\n")
+            temp_path = Path(f.name)
+
+        try:
+            df = load_dataset(temp_path)
+            self.assertIn("label", df.columns)
+            self.assertEqual(df["label"].iloc[0], "netral")
+            self.assertEqual(df["label"].iloc[1], "negatif")
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
     def test_load_dataset_non_existent_raises_error(self):
         """Memverifikasi bahwa file yang tidak ada secara eksplisit melempar FileNotFoundError."""
         with self.assertRaises(FileNotFoundError):
